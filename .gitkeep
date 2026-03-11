@@ -1,1 +1,0 @@
-Get-ChildItem -Path "videos", "features" -Recurse -Directory | ForEach-Object { New-Item -Path "$($_.FullName)\.gitkeep" -ItemType File }
