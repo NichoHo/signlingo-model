@@ -11,6 +11,6 @@ raw/**/*.avi
 !**/.gitkeep
 
 # 3. Ignore Python environment and cache
-.venv/
+venv/
 __pycache__/
 .DS_Store
