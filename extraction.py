@@ -6,7 +6,13 @@ import os
 mp_holistic = mp.solutions.holistic
 mp_drawing = mp.solutions.drawing_utils
 
-ACTIONS = np.array(['apa', 'siapa', 'di_mana', 'kapan', 'mengapa', 'bagaimana', 'tidak', 'maaf', 'tolong', 'mau', 'tidur', 'baik', 'buruk', 'sakit', 'senang', 'sedih', 'marah', 'lelah', 'bingung', 'suka', 'saya', 'kamu', 'dia', 'kita', 'ya', 'terima_kasih', 'halo', 'makan', 'minum', 'kerja', 'belajar', 'pergi', 'pulang', 'tahu', 'bisa', 'hari_ini', 'besok', 'kemarin', 'jam_waktu', 'teman'])
+ACTIONS = np.array(['apa', 'apa_kabar', 'bagaimana', 'baik', 'belajar', 'berapa', 'berdiri', 
+    'bingung', 'dia', 'dimana', 'duduk', 'halo', 'kalian', 'kami', 'kamu', 
+    'kapan', 'kemana', 'kita', 'makan', 'mandi', 'marah', 'melihat', 'membaca', 
+    'menulis', 'mereka', 'minum', 'pendek', 'ramah', 'sabar', 'saya', 'sedih', 
+    'selamat_malam', 'selamat_pagi', 'selamat_siang', 'selamat_sore', 'senang', 
+    'siapa', 'terima_kasih', 'tidur', 'tinggi'
+])
 
 # Face selection for Lightweight performance
 SELECTED_FACE_IDS = [

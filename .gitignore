@@ -3,6 +3,9 @@ videos/**/*.mp4
 videos/**/*.mov
 videos/**/*.avi
 features/**/*.npy
+raw/**/*.mp4
+raw/**/*.mov
+raw/**/*.avi
 
 # 2. DO NOT ignore the folder markers (.gitkeep)
 !**/.gitkeep
