@@ -4,6 +4,7 @@ import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import GRU, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+from tensorflow.keras.regularizers import l2
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.utils import to_categorical
 
@@ -87,12 +88,16 @@ def main():
     print(f"Testing data: {X_test.shape[0]} samples")
 
     # Build the Sequential GRU Model Architecture
+    L2_LAMBDA = 0.001  # L2 regularization strength
     model = Sequential([
-        GRU(64, return_sequences=True, input_shape=(SEQUENCE_LENGTH, FEATURES_DIM)),
+        GRU(64, return_sequences=True, input_shape=(SEQUENCE_LENGTH, FEATURES_DIM),
+            kernel_regularizer=l2(L2_LAMBDA), recurrent_regularizer=l2(L2_LAMBDA)),
         Dropout(0.2),
-        GRU(64, return_sequences=False),
+        GRU(64, return_sequences=False,
+            kernel_regularizer=l2(L2_LAMBDA), recurrent_regularizer=l2(L2_LAMBDA)),
         Dropout(0.2),
-        Dense(num_classes, activation='softmax')
+        Dense(num_classes, activation='softmax',
+              kernel_regularizer=l2(L2_LAMBDA))
     ])
 
     # Compile the model

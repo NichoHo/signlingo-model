@@ -34,6 +34,7 @@ import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import GRU, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+from tensorflow.keras.regularizers import l2
 from tensorflow.keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
 
@@ -109,21 +110,29 @@ def build_hypermodel(hp: kt.HyperParameters) -> tf.keras.Model:
     gru_units_1   : {32, 64, 96, 128}
     gru_units_2   : {32, 64, 96, 128}
     dropout_rate  : float in [0.1, 0.5], step 0.05
+    l2_lambda     : log-uniform in [1e-4, 1e-2]
     learning_rate : log-uniform in [1e-4, 1e-2]
     """
     gru_units_1   = hp.Choice('gru_units_1',   [32, 64, 96, 128])
     gru_units_2   = hp.Choice('gru_units_2',   [32, 64, 96, 128])
     dropout_rate  = hp.Float('dropout_rate',   min_value=0.1, max_value=0.5, step=0.05)
+    l2_lambda     = hp.Float('l2_lambda',      min_value=1e-4, max_value=1e-2,
+                              sampling='log')
     learning_rate = hp.Float('learning_rate',  min_value=1e-4, max_value=1e-2,
                               sampling='log')
 
     model = Sequential([
         GRU(gru_units_1, return_sequences=True,
-            input_shape=(SEQUENCE_LENGTH, FEATURES_DIM)),
+            input_shape=(SEQUENCE_LENGTH, FEATURES_DIM),
+            kernel_regularizer=l2(l2_lambda),
+            recurrent_regularizer=l2(l2_lambda)),
         Dropout(dropout_rate),
-        GRU(gru_units_2, return_sequences=False),
+        GRU(gru_units_2, return_sequences=False,
+            kernel_regularizer=l2(l2_lambda),
+            recurrent_regularizer=l2(l2_lambda)),
         Dropout(dropout_rate),
-        Dense(NUM_CLASSES, activation='softmax'),
+        Dense(NUM_CLASSES, activation='softmax',
+              kernel_regularizer=l2(l2_lambda)),
     ])
 
     model.compile(
@@ -146,6 +155,7 @@ def report_best_hparams(best_hp: kt.HyperParameters,
         f"  gru_units_1   : {best_hp.get('gru_units_1')}",
         f"  gru_units_2   : {best_hp.get('gru_units_2')}",
         f"  dropout_rate  : {best_hp.get('dropout_rate'):.2f}",
+        f"  l2_lambda     : {best_hp.get('l2_lambda'):.6f}",
         f"  learning_rate : {best_hp.get('learning_rate'):.6f}",
         "=" * 50,
     ]
