@@ -3,6 +3,8 @@ import mediapipe as mp
 import numpy as np
 import os
 
+from compact_features import derive_dir
+
 mp_holistic = mp.solutions.holistic
 mp_drawing = mp.solutions.drawing_utils
 
@@ -138,3 +140,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
             print(f"Processed: {action}/{file}")
 
 print("Success! Data extraction complete.")
+
+# Derive the compact 4-block features from the arrays just written. The (30, 447)
+# pipeline above is unchanged; this is a second pass over its output.
+derive_dir()

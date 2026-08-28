@@ -2,7 +2,7 @@
 videos/**/*.mp4
 videos/**/*.mov
 videos/**/*.avi
-features/**/*.npy
+*.npy
 raw/**/*.mp4
 raw/**/*.mov
 raw/**/*.avi
