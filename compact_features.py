@@ -16,6 +16,8 @@ scale) leaves untouched, so they are read straight off the same array. No re-ext
 
 import numpy as np
 import os
+import sys
+import tempfile
 
 # Face-mesh ids kept by extraction.py. It filters enumerate(face_landmarks), so the
 # stored order is ascending id, not the order they are listed in that script.
@@ -28,6 +30,10 @@ SELECTED_FACE_IDS = sorted([
 ])
 SLOT = {mid: i for i, mid in enumerate(SELECTED_FACE_IDS)}
 
+# extraction.py tests membership with `i not in SELECTED_FACE_IDS`, so a duplicated id
+# is emitted once but counted twice here, which shifts every face slot after it.
+assert len(SELECTED_FACE_IDS) == len(set(SELECTED_FACE_IDS)), "duplicate face id"
+
 # Eyebrow groups, split by the side of the image they sit on (checked against the data:
 # every id below is consistently on one side). Pose 2 is the left eye, pose 5 the right.
 BROW_LEFT = [SLOT[i] for i in (276, 282, 283, 285, 295, 300, 334, 336)]
@@ -35,7 +41,14 @@ BROW_RIGHT = [SLOT[i] for i in (46, 52, 53, 55, 65, 70, 105, 107)]
 LIP_TOP, LIP_BOTTOM = SLOT[13], SLOT[14]
 LIP_CORNERS = SLOT[61], SLOT[291]
 
-DIM_RAW = 447
+# Layout of the array extraction.py writes: pose, face, left hand, right hand. Derived
+# from the id list above, so changing the face selection moves every boundary at once
+# instead of leaving literals here to update by hand.
+N_FACE = len(SELECTED_FACE_IDS)
+POSE_END = 33 * 3
+FACE_END = POSE_END + N_FACE * 3
+DIM_RAW = FACE_END + 2 * 21 * 3   # 447 for the current 74-point face selection
+
 DIM_TOTAL = 151
 # Cut points for the four ablation arms: hands, +pose, +postural NMS, +facial NMS.
 ARMS = {'A': 126, 'AB': 144, 'ABC': 147, 'ABCD': 151}
@@ -45,13 +58,13 @@ DST_PATH = 'features_compact'
 
 
 def derive_frame(frame):
-    """One (447,) shoulder-normalized frame -> one (151,) compact frame."""
-    pose = frame[0:99].reshape(33, 3)
-    face = frame[99:321].reshape(74, 3)
+    """One shoulder-normalized (DIM_RAW,) frame -> one compact (DIM_TOTAL,) frame."""
+    pose = frame[0:POSE_END].reshape(33, 3)
+    face = frame[POSE_END:FACE_END].reshape(N_FACE, 3)
     out = np.zeros(DIM_TOTAL)
 
-    out[0:126] = frame[321:447]   # A: left hand then right hand
-    out[126:144] = frame[33:51]   # B: pose 11..16
+    out[0:126] = frame[FACE_END:DIM_RAW]      # A: left hand then right hand
+    out[126:144] = frame[11 * 3:17 * 3]       # B: pose 11..16
 
     # extraction.py stores zeros when a block was not detected. Ratios need real
     # landmarks, so leave C and D at zero rather than dividing by nothing.
@@ -86,7 +99,7 @@ def derive_frame(frame):
 
 
 def derive(seq):
-    """(T, 447) -> (T, 151)."""
+    """(T, DIM_RAW) -> (T, DIM_TOTAL)."""
     return np.stack([derive_frame(f) for f in seq])
 
 
@@ -114,9 +127,14 @@ def mirror(compact):
     return out                     # pitch, mouth aperture and mouth width are unchanged
 
 
-def derive_dir(src=SRC_PATH, dst=DST_PATH):
-    """Convert every (T, 447) .npy under src into a (T, 151) .npy under dst."""
-    written = 0
+def derive_dir(src=SRC_PATH, dst=DST_PATH, force=False):
+    """Convert every (T, DIM_RAW) .npy under src into a (T, DIM_TOTAL) .npy under dst.
+
+    Output that already exists is left alone unless force is set. Pass force=True after
+    changing any block definition, or the stale vectors survive and the run looks like a
+    no-op.
+    """
+    written, kept = 0, 0
     for action in sorted(os.listdir(src)):
         in_dir = os.path.join(src, action)
         if not os.path.isdir(in_dir):
@@ -127,7 +145,8 @@ def derive_dir(src=SRC_PATH, dst=DST_PATH):
             if not name.endswith('.npy'):
                 continue
             out_path = os.path.join(out_dir, name)
-            if os.path.exists(out_path):
+            if os.path.exists(out_path) and not force:
+                kept += 1
                 continue
             seq = np.load(os.path.join(in_dir, name))
             if seq.ndim != 2 or seq.shape[1] != DIM_RAW:
@@ -135,15 +154,18 @@ def derive_dir(src=SRC_PATH, dst=DST_PATH):
                 continue
             np.save(out_path, derive(seq))
             written += 1
-    print(f"Compact features: {written} new file(s) in {dst}/, {DIM_TOTAL} dims per frame")
+    print(f"Compact features -> {dst}/: {written} written, {kept} kept, "
+          f"{DIM_TOTAL} dims per frame")
+    if kept:
+        print("  Kept files were NOT re-derived. Rerun with --force after changing a block.")
 
 
 def _self_check():
     rng = np.random.default_rng(0)
     roll = np.deg2rad(15.0)
     frame = np.zeros(DIM_RAW)
-    pose = frame[0:99].reshape(33, 3)
-    face = frame[99:321].reshape(74, 3)
+    pose = frame[0:POSE_END].reshape(33, 3)
+    face = frame[POSE_END:FACE_END].reshape(N_FACE, 3)
 
     eye_mid = np.array([0.0, -1.2])
     pose[2, :2] = eye_mid + 0.1 * np.array([np.cos(roll), np.sin(roll)])   # left eye
@@ -154,12 +176,12 @@ def _self_check():
     face[LIP_TOP, 1], face[LIP_BOTTOM, 1] = -0.90, -0.84
     face[LIP_CORNERS[0], :2], face[LIP_CORNERS[1], :2] = [-0.08, -0.87], [0.08, -0.87]
     face[BROW_LEFT, 1], face[BROW_RIGHT, 1] = -1.35, -1.30
-    frame[321:447] = rng.normal(size=126)
+    frame[FACE_END:DIM_RAW] = rng.normal(size=126)
 
     c = derive_frame(frame)
     assert c.shape == (DIM_TOTAL,)
-    assert np.allclose(c[0:126], frame[321:447])
-    assert np.allclose(c[126:144], frame[33:51])
+    assert np.allclose(c[0:126], frame[FACE_END:DIM_RAW])
+    assert np.allclose(c[126:144], frame[11 * 3:17 * 3])
     assert np.isclose(c[144], roll), c[144]
     assert np.isclose(c[145], 0.036 / 0.36)
     assert np.isclose(c[146], 0.05 / 0.2)
@@ -179,23 +201,37 @@ def _self_check():
     assert np.isclose(m[146], c[146])                      # pitch survives
     assert np.allclose(m[147:149], c[147:149])             # mouth survives
     assert np.isclose(m[149], c[150]) and np.isclose(m[150], c[149])
-    flipped_rh = frame[384:447].reshape(21, 3) * [-1, 1, 1]
+    flipped_rh = frame[FACE_END + 63:DIM_RAW].reshape(21, 3) * [-1, 1, 1]
     assert np.allclose(m[0:63], flipped_rh.ravel())        # right hand lands in the left slot
-    assert np.allclose(m[126:129], frame[36:39] * [-1, 1, 1])  # shoulder 12 lands in 11's slot
+    assert np.allclose(m[126:129], frame[12 * 3:13 * 3] * [-1, 1, 1])  # pose 12 -> 11's slot
 
     # Missing detections must not leak a division.
     assert not derive_frame(np.zeros(DIM_RAW)).any()
     no_face = frame.copy()
-    no_face[99:321] = 0
+    no_face[POSE_END:FACE_END] = 0
     nf = derive_frame(no_face)
     assert nf[144:147].any() and not nf[147:151].any()
 
     assert derive(np.stack([frame, frame])).shape == (2, DIM_TOTAL)
     assert np.allclose(mirror(np.stack([c, c])), np.stack([m, m]))
+
+    # force must really overwrite: a stale block C silently poisons a whole ablation arm.
+    with tempfile.TemporaryDirectory() as tmp:
+        src, dst = os.path.join(tmp, 'in'), os.path.join(tmp, 'out')
+        os.makedirs(os.path.join(src, 'x'))
+        np.save(os.path.join(src, 'x', 'a.npy'), np.stack([frame, frame]))
+        derive_dir(src, dst)
+        stale = os.path.join(dst, 'x', 'a.npy')
+        np.save(stale, np.zeros((2, DIM_TOTAL)))
+        derive_dir(src, dst)
+        assert not np.load(stale).any(), "existing output should be kept by default"
+        derive_dir(src, dst, force=True)
+        assert np.load(stale).any(), "force should overwrite existing output"
+
     print("compact_features self-check passed")
 
 
 if __name__ == '__main__':
     _self_check()
     if os.path.isdir(SRC_PATH):
-        derive_dir()
+        derive_dir(force='--force' in sys.argv)
