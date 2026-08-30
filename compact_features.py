@@ -3,15 +3,27 @@
 Blocks, in this order, so each ablation arm is a prefix of the vector:
 
     A  hands            126   both hands, 21 points x 3, unchanged
-    B  articulator pose  18   shoulders/elbows/wrists (pose 11..16) x 3, unchanged
+    B  articulator pose  13   upper-arm and forearm unit vectors x 2 sides, + shoulder tilt
     C  postural NMS       3   head roll, yaw, pitch
     D  facial NMS         4   mouth aperture, mouth width, eyebrow raise left/right
                         ---
-                        151
+                        146
 
-Blocks A and B stay shoulder-normalized, exactly as stored. Blocks C and D are an
-angle and distance ratios, which the shoulder normalization (translation + uniform
-scale) leaves untouched, so they are read straight off the same array. No re-extraction.
+Block A stays shoulder-normalized coordinates, exactly as stored. Blocks B, C and D
+are directions, angles and distance ratios, all invariant to translation and uniform
+scale, so the shoulder normalization cannot move them and they are read straight off
+the same array. No re-extraction.
+
+Block B was 18 raw coordinates (pose 11..16). Measured on the four-signer set, adding
+those 18 numbers to the hands raised linear signer-recoverability from 65.5% to 94.6%,
++29pp, because elbow and wrist coordinates encode arm length and reach. Per joint, the
+between-signer spread over the within-signer spread came out at 0.62 for the shoulders
+but 1.30-1.51 for elbows and wrists: the shoulders carry no identity, the limbs do.
+
+Unit vectors keep every bit of arm motion and drop only limb length. Nothing is lost
+by dropping wrist position, because hand landmark 0 is the wrist and already sits in
+block A. This is Next-Steps 4.2 ("absolute geometry -> relative deformation") applied
+to block B, which the document applies only to C and D.
 """
 
 import numpy as np
@@ -49,9 +61,19 @@ POSE_END = 33 * 3
 FACE_END = POSE_END + N_FACE * 3
 DIM_RAW = FACE_END + 2 * 21 * 3   # 447 for the current 74-point face selection
 
-DIM_TOTAL = 151
+DIM_TOTAL = 146
 # Cut points for the four ablation arms: hands, +pose, +postural NMS, +facial NMS.
-ARMS = {'A': 126, 'AB': 144, 'ABC': 147, 'ABCD': 151}
+ARMS = {'A': 126, 'AB': 139, 'ABC': 142, 'ABCD': 146}
+
+# MediaPipe Pose: 11/12 shoulders, 13/14 elbows, 15/16 wrists. Left first in each pair,
+# so block B reshapes to (2 sides, 2 segments, 3) and mirroring is an axis reversal.
+LIMBS = ((11, 13), (13, 15), (12, 14), (14, 16))   # L upper, L fore, R upper, R fore
+
+
+def _unit(v):
+    """Direction of v, or zeros when the joint was not detected."""
+    n = np.linalg.norm(v)
+    return v / n if n > 1e-6 else np.zeros(3)
 
 SRC_PATH = 'features'
 DST_PATH = 'features_compact'
@@ -64,37 +86,49 @@ def derive_frame(frame):
     out = np.zeros(DIM_TOTAL)
 
     out[0:126] = frame[FACE_END:DIM_RAW]      # A: left hand then right hand
-    out[126:144] = frame[11 * 3:17 * 3]       # B: pose 11..16
 
-    # extraction.py stores zeros when a block was not detected. Ratios need real
-    # landmarks, so leave C and D at zero rather than dividing by nothing.
+    # extraction.py stores zeros when a block was not detected. Directions and ratios
+    # need real landmarks, so leave B, C and D at zero rather than dividing by nothing.
     if not pose.any():
         return out
+
+    # B: articulator DIRECTION, not position. Each limb contributes its unit vector,
+    # so the arm's configuration survives and its length does not. No denominator is
+    # needed or wanted: a unit vector is already scale-free, and dividing by an
+    # inter-ocular distance would mix a face measurement back into an arm measurement.
+    for k, (a, b) in enumerate(LIMBS):
+        out[126 + 3 * k:129 + 3 * k] = _unit(pose[b] - pose[a])
+    # Shoulder tilt. Shoulder normalization centres on the shoulder midpoint and scales
+    # by the shoulder distance without rotating, so after it the two shoulders sit at
+    # +/-0.5 of the shoulder unit vector and their coordinates encode the tilt and
+    # nothing else. Kept as one scalar so Next-Steps 4.8 can be measured, not assumed.
+    out[138] = np.arctan2(*(pose[11, :2] - pose[12, :2])[::-1])
+
     inter_ocular = np.linalg.norm(pose[2, :2] - pose[5, :2])
     if inter_ocular < 1e-6:
         return out
 
     # C: head orientation, from the pose block alone.
     dx, dy = pose[2, :2] - pose[5, :2]                 # right eye -> left eye
-    out[144] = np.arctan2(dy, dx)                      # roll
+    out[139] = np.arctan2(dy, dx)                      # roll
     ear_dist = np.linalg.norm(pose[7, :2] - pose[8, :2])
     if ear_dist > 1e-6:
         ear_mid_x = (pose[7, 0] + pose[8, 0]) / 2
-        out[145] = (pose[0, 0] - ear_mid_x) / ear_dist  # yaw
+        out[140] = (pose[0, 0] - ear_mid_x) / ear_dist  # yaw
     eye_mid_y = (pose[2, 1] + pose[5, 1]) / 2
     # ponytail: pitch off 2D y only. In projection a nod and a lowered head both just
     # move the nose down. If it reads as noise, try pose z, or drop pitch and shift the
     # block D indices down by one.
-    out[146] = (pose[0, 1] - eye_mid_y) / inter_ocular  # pitch
+    out[141] = (pose[0, 1] - eye_mid_y) / inter_ocular  # pitch
 
     # D: facial NMS, every entry a distance over inter-ocular. y grows downward, so
     # eye_y - brow_y is positive when the brow is up.
     if not face.any():
         return out
-    out[147] = abs(face[LIP_BOTTOM, 1] - face[LIP_TOP, 1]) / inter_ocular
-    out[148] = np.linalg.norm(face[LIP_CORNERS[1], :2] - face[LIP_CORNERS[0], :2]) / inter_ocular
-    out[149] = (pose[2, 1] - face[BROW_LEFT, 1].mean()) / inter_ocular
-    out[150] = (pose[5, 1] - face[BROW_RIGHT, 1].mean()) / inter_ocular
+    out[142] = abs(face[LIP_BOTTOM, 1] - face[LIP_TOP, 1]) / inter_ocular
+    out[143] = np.linalg.norm(face[LIP_CORNERS[1], :2] - face[LIP_CORNERS[0], :2]) / inter_ocular
+    out[144] = (pose[2, 1] - face[BROW_LEFT, 1].mean()) / inter_ocular
+    out[145] = (pose[5, 1] - face[BROW_RIGHT, 1].mean()) / inter_ocular
     return out
 
 
@@ -116,14 +150,17 @@ def mirror(compact):
     hands[..., 0] *= -1
     out[..., 0:126] = hands.reshape(lead + (126,))
 
-    artic = m[..., 126:144].reshape(lead + (3, 2, 3))[..., ::-1, :].copy()
+    # (2 sides, 2 segments, 3): reversing the side axis swaps the arms, and negating x
+    # flips each direction. Limb order in LIMBS is left-then-right for this reason.
+    artic = m[..., 126:138].reshape(lead + (2, 2, 3))[..., ::-1, :, :].copy()
     artic[..., 0] *= -1
-    out[..., 126:144] = artic.reshape(lead + (18,))
+    out[..., 126:138] = artic.reshape(lead + (12,))
 
-    out[..., 144] = -m[..., 144]   # roll
-    out[..., 145] = -m[..., 145]   # yaw
-    out[..., 149] = m[..., 150]    # eyebrow raise swaps sides
-    out[..., 150] = m[..., 149]
+    out[..., 138] = -m[..., 138]   # shoulder tilt
+    out[..., 139] = -m[..., 139]   # roll
+    out[..., 140] = -m[..., 140]   # yaw
+    out[..., 144] = m[..., 145]    # eyebrow raise swaps sides
+    out[..., 145] = m[..., 144]
     return out                     # pitch, mouth aperture and mouth width are unchanged
 
 
@@ -181,36 +218,58 @@ def _self_check():
     c = derive_frame(frame)
     assert c.shape == (DIM_TOTAL,)
     assert np.allclose(c[0:126], frame[FACE_END:DIM_RAW])
-    assert np.allclose(c[126:144], frame[11 * 3:17 * 3])
-    assert np.isclose(c[144], roll), c[144]
-    assert np.isclose(c[145], 0.036 / 0.36)
-    assert np.isclose(c[146], 0.05 / 0.2)
-    assert np.isclose(c[147], 0.06 / 0.2)
-    assert np.isclose(c[148], 0.16 / 0.2)
-    assert np.isclose(c[149], (pose[2, 1] + 1.35) / 0.2)
-    assert np.isclose(c[150], (pose[5, 1] + 1.30) / 0.2)
+    for k, (a, b) in enumerate(LIMBS):                     # B: direction, unit length
+        seg = c[126 + 3 * k:129 + 3 * k]
+        assert np.isclose(np.linalg.norm(seg), 1.0)
+        assert np.allclose(seg, _unit(pose[b] - pose[a]))
+    assert np.isclose(c[138], np.arctan2(*(pose[11, :2] - pose[12, :2])[::-1]))
+    assert np.isclose(c[139], roll), c[139]
+    assert np.isclose(c[140], 0.036 / 0.36)
+    assert np.isclose(c[141], 0.05 / 0.2)
+    assert np.isclose(c[142], 0.06 / 0.2)
+    assert np.isclose(c[143], 0.16 / 0.2)
+    assert np.isclose(c[144], (pose[2, 1] + 1.35) / 0.2)
+    assert np.isclose(c[145], (pose[5, 1] + 1.30) / 0.2)
 
-    # The claim blocks C and D rest on: they survive any translation + uniform scale,
-    # so re-running the shoulder normalization cannot move them.
+    # The claim blocks B, C and D rest on: they survive any translation + uniform
+    # scale, so re-running the shoulder normalization cannot move them.
     moved = derive_frame(frame * 2.5 + 0.3)
-    assert np.allclose(moved[144:151], c[144:151])
+    assert np.allclose(moved[126:DIM_TOTAL], c[126:DIM_TOTAL])
+
+    # The point of the change: stretching one arm must not move block B. Lengthening
+    # the forearm along its own direction changes reach, which is the anthropometry
+    # the old coordinate form leaked, and leaves every direction untouched.
+    longer = frame.copy()
+    lp = longer[0:POSE_END].reshape(33, 3)
+    lp[15] = lp[13] + 1.7 * (lp[15] - lp[13])              # left forearm, 70% longer
+    lc = derive_frame(longer)
+    assert np.allclose(lc[126:DIM_TOTAL], c[126:DIM_TOTAL]), "block B still encodes limb length"
+
+    # ...while a genuine change of arm configuration must still show up.
+    bent = frame.copy()
+    bp = bent[0:POSE_END].reshape(33, 3)
+    bp[15] = bp[13] + np.array([0.4, -0.3, 0.1])
+    assert not np.allclose(derive_frame(bent)[129:132], c[129:132]), "block B lost arm motion"
 
     m = mirror(c)
     assert np.allclose(mirror(m), c)                       # mirroring twice is identity
-    assert np.isclose(m[144], -c[144]) and np.isclose(m[145], -c[145])
-    assert np.isclose(m[146], c[146])                      # pitch survives
-    assert np.allclose(m[147:149], c[147:149])             # mouth survives
-    assert np.isclose(m[149], c[150]) and np.isclose(m[150], c[149])
+    assert np.isclose(m[138], -c[138])                     # shoulder tilt
+    assert np.isclose(m[139], -c[139]) and np.isclose(m[140], -c[140])
+    assert np.isclose(m[141], c[141])                      # pitch survives
+    assert np.allclose(m[142:144], c[142:144])             # mouth survives
+    assert np.isclose(m[144], c[145]) and np.isclose(m[145], c[144])
     flipped_rh = frame[FACE_END + 63:DIM_RAW].reshape(21, 3) * [-1, 1, 1]
     assert np.allclose(m[0:63], flipped_rh.ravel())        # right hand lands in the left slot
-    assert np.allclose(m[126:129], frame[12 * 3:13 * 3] * [-1, 1, 1])  # pose 12 -> 11's slot
+    # right upper arm lands in the left upper arm's slot, x negated
+    assert np.allclose(m[126:129], c[132:135] * [-1, 1, 1])
+    assert np.allclose(m[129:132], c[135:138] * [-1, 1, 1])
 
     # Missing detections must not leak a division.
     assert not derive_frame(np.zeros(DIM_RAW)).any()
     no_face = frame.copy()
     no_face[POSE_END:FACE_END] = 0
     nf = derive_frame(no_face)
-    assert nf[144:147].any() and not nf[147:151].any()
+    assert nf[126:142].any() and not nf[142:DIM_TOTAL].any()
 
     assert derive(np.stack([frame, frame])).shape == (2, DIM_TOTAL)
     assert np.allclose(mirror(np.stack([c, c])), np.stack([m, m]))
